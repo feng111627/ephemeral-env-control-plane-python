@@ -27,6 +27,12 @@ ALLOWED_TRANSITIONS: dict[EnvStatus, set[EnvStatus]] = {
 }
 
 
+# 仍占用配额的状态（未结清）
+ACTIVE_STATUSES: frozenset[EnvStatus] = frozenset(
+    {EnvStatus.REQUESTED, EnvStatus.PROVISIONING, EnvStatus.READY, EnvStatus.EXPIRING}
+)
+
+
 class Role(str, enum.Enum):
     ADMIN = "admin"
     MEMBER = "member"
