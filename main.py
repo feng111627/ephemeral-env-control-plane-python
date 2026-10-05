@@ -1,7 +1,11 @@
 import uvicorn
 from fastapi import FastAPI
 
-app = FastAPI()
+from app.api import build_service, create_router, install_exception_handlers
+
+app = FastAPI(title="ephemeral-env-control-plane")
+install_exception_handlers(app)
+app.include_router(create_router(build_service()), prefix="/api")
 
 
 @app.get("/")
