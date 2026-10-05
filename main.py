@@ -1,7 +1,10 @@
 import uvicorn
 from fastapi import FastAPI
 
+from app.api import router as env_router
+
 app = FastAPI()
+app.include_router(env_router)
 
 
 @app.get("/")
