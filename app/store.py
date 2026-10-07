@@ -8,7 +8,15 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
-from app.models import AuditRecord, Environment, EnvStatus, Quota
+from app.models import (
+    AuditRecord,
+    Environment,
+    EnvStatus,
+    QueueAuditRecord,
+    QueueEntry,
+    QueueStatus,
+    Quota,
+)
 
 DEFAULT_USER_QUOTA = 3
 DEFAULT_TEAM_QUOTA = 8
@@ -30,6 +38,8 @@ class Store:
         self._user_quota: dict[str, Quota] = {}
         self._team_quota: dict[str, Quota] = {}
         self._audit: list[AuditRecord] = []
+        self._queue: dict[str, QueueEntry] = {}
+        self._queue_audit: list[QueueAuditRecord] = []
 
     # ---- 通用原子执行 ----
 
@@ -91,3 +101,45 @@ class Store:
 
     def audit_for(self, env_id: str) -> list[AuditRecord]:
         return [r for r in self._audit if r.env_id == env_id]
+
+    # ---- 排队 ----
+
+    def put_queue_entry(self, entry: QueueEntry) -> None:
+        self._queue[entry.id] = entry
+
+    def get_queue_entry(self, entry_id: str) -> QueueEntry | None:
+        return self._queue.get(entry_id)
+
+    def find_active_queue_entry(self, owner_id: str, key: str) -> QueueEntry | None:
+        """同一 (owner, key) 的非终态排队记录（至多一条）。"""
+        for e in self._queue.values():
+            if (
+                e.owner_id == owner_id
+                and e.idempotency_key == key
+                and e.status is QueueStatus.WAITING
+            ):
+                return e
+        return None
+
+    def waiting_entries(self, team_id: str) -> list[QueueEntry]:
+        """某团队排队中的条目，按入队先后（created_at, 入队顺序）排序。"""
+        entries = [
+            e
+            for e in self._queue.values()
+            if e.team_id == team_id and e.status is QueueStatus.WAITING
+        ]
+        return sorted(entries, key=lambda e: e.created_at)
+
+    def list_queue_entries(self, owner_id: str | None = None) -> list[QueueEntry]:
+        entries = list(self._queue.values())
+        if owner_id is not None:
+            entries = [e for e in entries if e.owner_id == owner_id]
+        return sorted(entries, key=lambda e: e.created_at)
+
+    # ---- 排队审计 ----
+
+    def append_queue_audit(self, record: QueueAuditRecord) -> None:
+        self._queue_audit.append(record)
+
+    def queue_audit_for(self, entry_id: str) -> list[QueueAuditRecord]:
+        return [r for r in self._queue_audit if r.entry_id == entry_id]

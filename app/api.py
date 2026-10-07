@@ -6,7 +6,13 @@ from pydantic import BaseModel, Field
 
 from app.auth import Identity
 from app.errors import ControlPlaneError
-from app.models import Environment, EnvStatus, RejectReason
+from app.models import (
+    Environment,
+    EnvStatus,
+    QueueEntry,
+    QueueStatus,
+    RejectReason,
+)
 from app.service import EnvService
 from app.store import Store
 
@@ -75,6 +81,40 @@ class AuditOut(BaseModel):
     detail: str
 
 
+class QueueEntryOut(BaseModel):
+    id: str
+    owner_id: str
+    team_id: str
+    idempotency_key: str
+    status: QueueStatus
+    created_at: float
+    expires_at: float
+    env_id: str | None
+
+    @staticmethod
+    def of(entry: QueueEntry) -> "QueueEntryOut":
+        return QueueEntryOut(
+            id=entry.id,
+            owner_id=entry.owner_id,
+            team_id=entry.team_id,
+            idempotency_key=entry.idempotency_key,
+            status=entry.status,
+            created_at=entry.created_at,
+            expires_at=entry.expires_at,
+            env_id=entry.env_id,
+        )
+
+
+class QueueAuditOut(BaseModel):
+    entry_id: str
+    from_status: QueueStatus | None
+    to_status: QueueStatus
+    actor_id: str
+    action: str
+    at: float
+    detail: str
+
+
 @router.post("", response_model=EnvOut, status_code=201)
 def create_env(body: CreateEnvIn, actor: Identity = Depends(get_identity)):
     try:
@@ -91,6 +131,63 @@ def list_envs(actor: Identity = Depends(get_identity)):
 @router.get("/usage")
 def get_usage(actor: Identity = Depends(get_identity)):
     return service.usage(actor)
+
+
+# ---- 排队（须先于 /{env_id} 注册，避免被路径参数捕获） ----
+
+
+@router.post("/queue", response_model=QueueEntryOut, status_code=201)
+def enqueue(body: CreateEnvIn, actor: Identity = Depends(get_identity)):
+    """带幂等键排队等额度；同人同键重复排队只算一个位置。"""
+    return QueueEntryOut.of(service.enqueue(actor, body.idempotency_key))
+
+
+@router.get("/queue", response_model=list[QueueEntryOut])
+def list_queue(actor: Identity = Depends(get_identity)):
+    """列出本人的排队记录（管理员可见全量）。"""
+    return [QueueEntryOut.of(e) for e in service.list_queue(actor)]
+
+
+@router.post("/queue/sweep", response_model=list[QueueEntryOut])
+def sweep_queue(actor: Identity = Depends(get_identity)):
+    """触发排队超时失效（本地验证用；生产可由定时任务调用）。"""
+    return [QueueEntryOut.of(e) for e in service.sweep_queue()]
+
+
+@router.get("/queue/{entry_id}", response_model=QueueEntryOut)
+def get_queue_entry(entry_id: str, actor: Identity = Depends(get_identity)):
+    try:
+        return QueueEntryOut.of(service.get_queue_entry(actor, entry_id))
+    except ControlPlaneError as exc:
+        raise _err(exc)
+
+
+@router.post("/queue/{entry_id}/cancel", response_model=QueueEntryOut)
+def cancel_queue_entry(entry_id: str, actor: Identity = Depends(get_identity)):
+    try:
+        return QueueEntryOut.of(service.cancel_queue_entry(actor, entry_id))
+    except ControlPlaneError as exc:
+        raise _err(exc)
+
+
+@router.get("/queue/{entry_id}/audit", response_model=list[QueueAuditOut])
+def get_queue_audit(entry_id: str, actor: Identity = Depends(get_identity)):
+    try:
+        records = service.queue_audit_trail(actor, entry_id)
+    except ControlPlaneError as exc:
+        raise _err(exc)
+    return [
+        QueueAuditOut(
+            entry_id=r.entry_id,
+            from_status=r.from_status,
+            to_status=r.to_status,
+            actor_id=r.actor_id,
+            action=r.action,
+            at=r.at,
+            detail=r.detail,
+        )
+        for r in records
+    ]
 
 
 @router.get("/{env_id}", response_model=EnvOut)

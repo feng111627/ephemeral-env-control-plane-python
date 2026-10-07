@@ -71,3 +71,47 @@ class AuditRecord:
     action: str
     at: float = field(default_factory=time.time)
     detail: str = ""
+
+
+class QueueStatus(str, enum.Enum):
+    """排队条目状态。"""
+
+    WAITING = "waiting"      # 排队中
+    PROMOTED = "promoted"    # 已放行（已创建环境）
+    CANCELLED = "cancelled"  # 已取消（用户主动放弃）
+    EXPIRED = "expired"      # 已超时失效
+
+
+#: 排队条目的终态（不再占用队列位置）
+QUEUE_TERMINAL_STATUSES: frozenset[QueueStatus] = frozenset(
+    {QueueStatus.PROMOTED, QueueStatus.CANCELLED, QueueStatus.EXPIRED}
+)
+
+
+@dataclass
+class QueueEntry:
+    """一条排队记录：同一 (owner, idempotency_key) 同时最多一条非终态记录。"""
+
+    id: str
+    owner_id: str
+    team_id: str
+    idempotency_key: str
+    status: QueueStatus = QueueStatus.WAITING
+    created_at: float = field(default_factory=time.time)
+    expires_at: float = 0.0
+    env_id: str | None = None  # 放行后关联的环境
+
+    @staticmethod
+    def new_id() -> str:
+        return uuid.uuid4().hex
+
+
+@dataclass
+class QueueAuditRecord:
+    entry_id: str
+    from_status: QueueStatus | None
+    to_status: QueueStatus
+    actor_id: str
+    action: str
+    at: float = field(default_factory=time.time)
+    detail: str = ""
